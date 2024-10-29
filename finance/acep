@@ -1,0 +1,130 @@
+<?php
+include '../config/db.php'; 
+session_start();
+
+// Fungsi untuk format Rupiah
+function formatRupiah($angka) {
+    return 'Rp ' . number_format($angka, 2, ',', '.');
+}
+
+// Retrieve POST data for payment (bayar)
+$bayar = filter_input(INPUT_POST, 'bayar', FILTER_SANITIZE_NUMBER_FLOAT, FILTER_FLAG_ALLOW_FRACTION);
+$customer_id = filter_input(INPUT_POST, 'customer_id', FILTER_SANITIZE_NUMBER_INT);
+$alamat_kirim = filter_input(INPUT_POST, 'alamat_kirim', FILTER_SANITIZE_STRING);
+$total_harga = 0; 
+$id_rekening = filter_input(INPUT_POST, 'id_rekening', FILTER_SANITIZE_NUMBER_INT); 
+
+// Generate a unique kode_transaksi
+$kode_transaksi_query = "SELECT IFNULL(MAX(CAST(SUBSTRING(kode_transaksi, 9) AS UNSIGNED)), 0) + 1 FROM transaksi_barang";
+$result = $conn->query($kode_transaksi_query);
+$row = $result->fetch_row();
+$kode_transaksi = "TRX-" . str_pad($row[0], 6, '0', STR_PAD_LEFT); // Format: TRX-000001
+
+// Prepare SQL for inserting transactions
+$transaksi_sql = "INSERT INTO transaksi_barang (kode_transaksi, kode_penyimpanan, customer_id, jumlah_beli, total_harga, alamat_kirim, tanggal_transaksi, nama_barang, bayar, status, keterangan) VALUES (?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?)";
+$stmt_transaksi = $conn->prepare($transaksi_sql);
+
+// Check if prepare failed
+if (!$stmt_transaksi) {
+    die('Prepare failed: ' . htmlspecialchars($conn->error));
+}
+
+// Process each item in the transaction
+foreach ($_POST['kode_penyimpanan'] as $i => $kode_penyimpanan) {
+    $jumlah_beli_array = filter_input(INPUT_POST, 'jumlah_beli', FILTER_SANITIZE_NUMBER_INT, FILTER_REQUIRE_ARRAY);
+    $jumlah_beli = isset($jumlah_beli_array[$i]) ? $jumlah_beli_array[$i] : 0;
+
+    // Fetch item details
+    $barang_sql = "SELECT nama_barang, harga_barang FROM penyimpanan_barang WHERE kode_penyimpanan = ?";
+    $stmt_barang = $conn->prepare($barang_sql);
+    $stmt_barang->bind_param("s", $kode_penyimpanan);
+    $stmt_barang->execute();
+    $barang_result = $stmt_barang->get_result();
+
+    if ($barang_result) {
+        $item = $barang_result->fetch_assoc();
+        if ($item) {
+            $nama_barang = $item['nama_barang'];
+            $harga_barang = $item['harga_barang'];
+
+            // Calculate subtotal
+            $subtotal = $harga_barang * $jumlah_beli;
+            $total_harga += $subtotal;
+
+            // Determine payment status and keterangan
+            if ($bayar >= $total_harga) {
+                $status = 'Disetujui'; // Paid in full
+                $keterangan = 'sudah lunas';
+            } elseif ($bayar > 0) {
+                $status = 'Menunggu'; // Partially paid
+                $keterangan = 'belum lunas';
+            } else {
+                $status = 'Menunggu'; // No payment made
+                $keterangan = 'belum lunas';
+            }
+
+            // Bind parameters and execute transaction
+            $stmt_transaksi->bind_param("ssiissssss", $kode_transaksi, $kode_penyimpanan, $customer_id, $jumlah_beli, $subtotal, $alamat_kirim, $nama_barang, $bayar, $status, $keterangan);
+            if (!$stmt_transaksi->execute()) {
+                die('Execute failed: ' . htmlspecialchars($stmt_transaksi->error));
+            }
+        }
+    } else {
+        die('Fetch failed: ' . htmlspecialchars($stmt_barang->error));
+    }
+}
+
+$stmt_barang->close();
+$stmt_transaksi->close();
+
+// Update bank account balance
+$balance_query = "SELECT saldo_akhir FROM rekening_bank WHERE id = ?";
+$balance_stmt = $conn->prepare($balance_query);
+$balance_stmt->bind_param("i", $id_rekening);
+$balance_stmt->execute();
+$balance_stmt->bind_result($current_saldo_akhir);
+$balance_stmt->fetch();
+$balance_stmt->close();
+
+// Update the bank account's saldo_akhir
+$update_rekening_sql = "UPDATE rekening_bank SET saldo_akhir = saldo_akhir + ? WHERE id = ?";
+$update_rekening_stmt = $conn->prepare($update_rekening_sql);
+$update_rekening_stmt->bind_param("di", $total_harga, $id_rekening);
+
+if (!$update_rekening_stmt->execute()) {
+    die('Error updating bank saldo_akhir: ' . htmlspecialchars($update_rekening_stmt->error));
+}
+
+$update_rekening_stmt->close();
+
+// If there is a payment, handle it
+if ($bayar > 0) {
+    // Check for remaining payment
+    $remaining_payment = $total_harga - $bayar;
+    
+    if ($remaining_payment > 0) {
+        // Insert into piutang table if not fully paid
+        $piutang_sql = "INSERT INTO piutang (kode_piutang, customer_id, tanggal, nominal, keterangan) VALUES (?, ?, NOW(), ?, ?)";
+        $kode_piutang = "PIUT-" . time(); // Generate a unique kode_piutang
+        $keterangan_piutang = "Sisa pembayaran untuk transaksi barang dengan total " . formatRupiah($total_harga);
+
+        $stmt_piutang = $conn->prepare($piutang_sql);
+        
+        // Check if prepare failed
+        if (!$stmt_piutang) {
+            die('Prepare failed: ' . htmlspecialchars($conn->error));
+        }
+        
+        $stmt_piutang->bind_param("sids", $kode_piutang, $customer_id, $remaining_payment, $keterangan_piutang);
+        
+        if (!$stmt_piutang->execute()) {
+            die('Error inserting piutang: ' . htmlspecialchars($stmt_piutang->error));
+        }
+
+        $stmt_piutang->close();
+    }
+}
+
+header("Location: riwayat-transaksi.php"); 
+exit();
+?>

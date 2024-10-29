@@ -1,0 +1,42 @@
+
+/* Styling untuk modal */
+.modal-lg {
+    max-width: 80%; /* Mengatur ukuran modal besar */
+}
+
+.table th, .table td {
+    vertical-align: middle; /* Agar konten di dalam sel tabel berada di tengah */
+    text-align: center;
+}
+
+#items-list .row {
+    margin-bottom: 10px;
+}
+
+#items-list input {
+    border: 1px solid #ced4da;
+    padding: 0.5em;
+}
+
+.btn-success {
+    background-color: #28a745;
+    border-color: #28a745;
+}
+
+.page-header-left {
+    margin-bottom: 20px;
+}
+
+/* Tambahan styling untuk button dan alert */
+.btn-primary {
+    background-color: #007bff;
+    border-color: #007bff;
+}
+
+.alert {
+    margin-top: 20px;
+    padding: 10px;
+    color: #fff;
+    background-color: #17a2b8;
+}
+
